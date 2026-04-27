@@ -1,0 +1,59 @@
+# DeepEye Lite — MediaMTX 설정 (IP CAM RTSP → HLS 변환 전용)
+# docker-compose 에서 컨테이너의 `/mediamtx.yml` 경로로 볼륨 마운트된다.
+# 대상 버전: MediaMTX v1.17.x (공식 이미지 bluenviron/mediamtx:latest)
+#
+# DeepEye Lite 가 MediaMTX 로 하는 일:
+#   1) Backend(FastAPI) 가 API(:9997)로 path 를 동적 등록/삭제
+#      — POST /v3/config/paths/add/{name}      (카메라 등록)
+#      — DELETE /v3/config/paths/delete/{name} (카메라 삭제)
+#   2) MediaMTX 가 해당 IP CAM RTSP 를 pull
+#   3) 브라우저가 HLS(:8888) 로 재생
+# 그 외 프로토콜은 사용하지 않으므로 비활성화 — 포트/공격 표면 최소화.
+
+# ── 로깅 ──
+logLevel: info
+logDestinations: [stdout]   # 컨테이너이므로 파일이 아닌 stdout 으로 (docker logs 로 확인)
+
+# ── 인증 (Auth) ──
+# MediaMTX 기본 설정은 API 접근을 127.0.0.1 에서만 허용한다. Docker bridge 네트워크에서
+# backend 컨테이너는 별도 IP(172.x.x.x) 로 API 를 호출하므로 기본 설정이면 401 이 발생.
+# 아래는 "아무나 모든 액션 허용" 설정 — 개발 편의상. 배포 시엔 IP 제한 + 비밀번호 권장.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []                 # 빈 배열 = 모든 IP 허용
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api          # ← Backend 컨테이너의 path 등록/삭제 API 호출
+      - action: metrics
+      - action: pprof
+
+# ── API 서버 (Backend 가 path 를 동적 등록/삭제) ──
+api: yes
+apiAddress: :9997
+apiAllowOrigins: ['*']       # v1.16+ 에서 단수 apiAllowOrigin → 복수 apiAllowOrigins 로 변경됨
+
+# ── RTSP 서버 (IP CAM 원본 ingest) ──
+rtsp: yes
+rtspAddress: :8554
+
+# ── HLS 서버 (브라우저 재생) ──
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']       # v1.16+ 에서 복수형으로 변경. 프론트엔드(다른 포트)에서 HLS 접근 시 필수
+
+# ── 사용하지 않는 프로토콜 비활성화 ──
+rtmp: no
+webrtc: no
+srt: no
+playback: no
+metrics: no
+pprof: no
+
+# ── 경로 (Paths) — 동적 관리 ──
+# Backend 가 API 로 path 를 추가/삭제하므로 초기값은 비워둔다.
+# MediaMTX 재기동 후에도 Backend 가 `sync_streams_to_mediamtx()` 로
+# DB 에 등록된 카메라를 다시 등록하는 구조 (app/main.py 의 lifespan 참조).
+paths: {}

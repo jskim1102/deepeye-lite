@@ -1,0 +1,25 @@
+[tool.poetry]
+package-mode = false
+
+[project]
+name = "deepeye-lite"
+version = "0.1.0"
+description = "DeepEye Lite - 경량 단독 설치형 CCTV AI 분석 플랫폼"
+authors = [
+    {name = "kim_3090"}
+]
+requires-python = "^3.11"
+dependencies = [
+    "opencv-python-headless (>=4.13.0.92,<5.0.0.0)",
+    "fastapi (>=0.135.2,<0.136.0)",
+    "uvicorn (>=0.42.0,<0.43.0)",
+    "sqlalchemy (>=2.0.48,<3.0.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "websockets (>=16.0,<17.0)",
+    "httpx (>=0.28.1,<0.29.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

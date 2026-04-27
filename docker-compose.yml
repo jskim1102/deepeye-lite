@@ -1,0 +1,73 @@
+# DeepEye Lite v2.0 — 단일 배포 구성 (backend + frontend + mediamtx)
+#
+# 실행:   docker compose up --build
+# 재빌드 없이: docker compose up
+# 종료:   docker compose down
+#
+# 호스트 사전 요구: Docker Engine · Docker Compose v2 (§5.2 참조)
+# 환경변수: 같은 디렉토리의 `.env` 를 compose 가 자동으로 읽어 ${VAR} 로 치환.
+#          (없으면 오류. `.env.example` 복사해서 만들어야 함.)
+# 브라우저 접속: http://<서버IP>:${FRONTEND_PORT}  (frontend)
+
+services:
+  # ─────────────────────────────── Backend ───────────────────────────────
+  backend:
+    build:
+      context: ./backend
+    image: deepeye-lite-backend:dev
+    container_name: deepeye-lite-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # 컨테이너 네트워크 내부에서는 서비스명이 호스트명. backend/.env 의
+      # MEDIAMTX_API=http://localhost:9997 을 override 한다.
+      MEDIAMTX_API: http://mediamtx:${MEDIAMTX_API_PORT}
+    ports:
+      - "${BACKEND_PORT}:8000"
+    devices:
+      # USB 웹캠. 호스트 환경에 따라 video0/video1 추가/삭제한다.
+      # (장치가 없으면 docker 가 기동을 거부하므로 주의 — 현재 서버는 2개 존재)
+      - "/dev/video0:/dev/video0"
+      - "/dev/video1:/dev/video1"
+    volumes:
+      # SQLite DB 영속화 — 호스트 파일을 그대로 bind mount.
+      # 호스트에 파일이 반드시 존재해야 한다. 없으면 Docker 가 디렉토리로 생성해버림.
+      # 최초 생성 방법: `touch backend/deepeye.db` 또는 backend 를 한 번 비컨테이너로 실행.
+      - ./backend/deepeye.db:/app/deepeye.db
+    depends_on:
+      - mediamtx
+    restart: unless-stopped
+
+  # ─────────────────────────────── Frontend ──────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Vite 는 빌드 타임에 VITE_* 를 정적 인라인하므로 build.args 로 전달.
+        # 브라우저가 접속할 포트이므로 "호스트에 노출된" 포트 값을 넘겨야 함.
+        VITE_API_PORT: "${BACKEND_PORT}"
+        VITE_HLS_PORT: "${MEDIAMTX_HLS_PORT}"
+    image: deepeye-lite-frontend:dev
+    container_name: deepeye-lite-frontend
+    ports:
+      # 호스트 ${FRONTEND_PORT} → 컨테이너 80 (Nginx 기본 포트, 이미지 빌드시 고정)
+      - "${FRONTEND_PORT}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ─────────────────────────────── MediaMTX ──────────────────────────────
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: deepeye-lite-mediamtx
+    ports:
+      - "${MEDIAMTX_API_PORT}:9997"   # REST API (Backend 가 path 동적 등록/삭제)
+      - "${MEDIAMTX_HLS_PORT}:8888"   # HLS (브라우저 재생)
+      - "${MEDIAMTX_RTSP_PORT}:8554"  # RTSP (디버깅/외부 RTSP 재생용. 필수는 아님)
+    volumes:
+      # 컨테이너 내부 기본 설정 경로가 /mediamtx.yml
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    restart: unless-stopped
+
+# 네트워크: 기본 bridge 사용 (§6.2.4 재검토 결론 — HLS/API 가 TCP 라 host 모드 불필요).
+# 서비스간 통신은 compose 가 자동 생성하는 네트워크 내에서 서비스명 DNS 로 해결.

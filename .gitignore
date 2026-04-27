@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# 환경변수
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DB
+*.db
+*.sqlite3
+
+# YOLO 모델 파일
+*.pt
+*.onnx
+
+# Claude
+.claude/
