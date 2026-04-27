@@ -24,10 +24,9 @@
 
 ## 시스템 요구사항
 
-- Linux (Ubuntu 22.04+ 권장)
-- Docker Engine + Docker Compose v2
-- USB 웹캠 사용 시: `/dev/video*` 디바이스 접근 권한
-- (Phase 3 부터) NVIDIA GPU + nvidia-container-toolkit
+- Docker Engine + Docker Compose v2 (Linux · macOS · Windows 모두 가능)
+- **USB 웹캠 기능을 쓰려면 Linux 호스트** + `/dev/video*` 디바이스 접근 권한 (Mac/Windows 는 IP CAM 만 가능)
+- (v3.0 부터) NVIDIA GPU + `nvidia-container-toolkit` (Linux)
 
 ## 빠른 시작
 
@@ -61,7 +60,29 @@ cp frontend/.env.example frontend/.env
 touch backend/deepeye.db
 ```
 
-### 4. 기동
+### 4. (Linux + USB 웹캠 사용 시에만) 웹캠 override 활성화
+
+`/dev/video*` 를 backend 컨테이너에 마운트해야 웹캠 기능이 동작한다. 두 가지 방법:
+
+**방법 A — `.env` 에 한 줄 추가 (권장)**
+
+```bash
+echo "COMPOSE_FILE=docker-compose.yml:docker-compose.webcam.yml" >> .env
+```
+
+이후 `docker compose ...` 명령 평소대로 사용 — 두 파일이 자동 머지된다.
+
+**방법 B — 매 명령마다 `-f` 명시**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.webcam.yml up -d
+```
+
+> Mac/Windows 또는 웹캠 미사용 시 이 단계는 **건너뛰고** 다음으로 진행. 기본 `docker-compose.yml` 만으로 IP CAM 은 정상 동작한다.
+
+> 호스트의 비디오 디바이스 수에 맞게 `docker-compose.webcam.yml` 의 `/dev/videoN` 줄을 추가/제거해야 한다 (디바이스 없는 줄이 있으면 backend 가 시작 거부).
+
+### 5. 기동
 
 ```bash
 docker compose up -d --build
@@ -69,7 +90,7 @@ docker compose up -d --build
 
 최초 실행은 2~3분 소요 (이미지 빌드 + MediaMTX 다운로드).
 
-### 5. 접속
+### 6. 접속
 
 브라우저에서:
 
@@ -80,7 +101,7 @@ http://<서버IP>:5173
 - **Webcam**: USB 웹캠을 자동 감지하여 그리드 스트리밍
 - **IP CAM**: RTSP 주소 등록 → MediaMTX 가 HLS 로 변환 → 브라우저 재생
 
-### 6. 종료
+### 7. 종료
 
 ```bash
 docker compose down

@@ -1,0 +1,22 @@
+# DeepEye Lite — USB 웹캠 사용 시 추가로 적용하는 override 파일.
+#
+# 단독으로는 의미가 없고, 기본 docker-compose.yml 위에 머지되어 backend 컨테이너에
+# 호스트의 V4L2 디바이스(`/dev/video*`)를 패스스루한다. **Linux 호스트 전용**.
+#
+# 사용 방법:
+#   1) 명시적 머지
+#      docker compose -f docker-compose.yml -f docker-compose.webcam.yml up -d
+#   2) 또는 .env 의 COMPOSE_FILE 변수에 등록 후 평소대로 `docker compose up -d`:
+#      COMPOSE_FILE=docker-compose.yml:docker-compose.webcam.yml
+#
+# Mac/Windows 호스트에는 적용하지 말 것 — `/dev/video*` 가 존재하지 않아 backend 가
+# 시작 거부됨. 이 경우 기본 docker-compose.yml 만 사용 (IP CAM 만 동작).
+#
+# 호스트의 비디오 디바이스 수에 맞게 줄을 추가/제거한다.
+# 노트북 내장 카메라 1개라면 video0 만 남기고 video1 줄을 삭제.
+
+services:
+  backend:
+    devices:
+      - "/dev/video0:/dev/video0"
+      - "/dev/video1:/dev/video1"

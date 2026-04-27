@@ -24,11 +24,9 @@ services:
       MEDIAMTX_API: http://mediamtx:${MEDIAMTX_API_PORT}
     ports:
       - "${BACKEND_PORT}:8000"
-    devices:
-      # USB 웹캠. 호스트 환경에 따라 video0/video1 추가/삭제한다.
-      # (장치가 없으면 docker 가 기동을 거부하므로 주의 — 현재 서버는 2개 존재)
-      - "/dev/video0:/dev/video0"
-      - "/dev/video1:/dev/video1"
+    # USB 웹캠을 쓰려면 (Linux 호스트 한정) `docker-compose.webcam.yml` 을 함께 적용:
+    #   docker compose -f docker-compose.yml -f docker-compose.webcam.yml up -d
+    # 또는 .env 에 COMPOSE_FILE 변수로 두 파일을 묶어 두면 평소 명령 그대로 사용 가능 (.env.example 참고).
     volumes:
       # SQLite DB 영속화 — 호스트 파일을 그대로 bind mount.
       # 호스트에 파일이 반드시 존재해야 한다. 없으면 Docker 가 디렉토리로 생성해버림.
