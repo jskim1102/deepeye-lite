@@ -28,6 +28,16 @@
 - **USB 웹캠 기능을 쓰려면 Linux 호스트** + `/dev/video*` 디바이스 접근 권한 (Mac/Windows 는 IP CAM 만 가능)
 - (v3.0 부터) NVIDIA GPU + `nvidia-container-toolkit` (Linux)
 
+### OS 별 차이 한눈에
+
+| 항목 | Linux | macOS | Windows |
+|---|---|---|---|
+| Docker | Docker Engine | Docker Desktop | Docker Desktop (WSL2) |
+| Webcam (`/webcam`) | ✅ USB 카메라 | ❌ 미지원 (장치 패스스루 불가) | ❌ 미지원 |
+| IP CAM (`/ipcam`) | ✅ | ✅ | ✅ |
+| 빠른 시작 단계 4 (웹캠 override) | 웹캠 쓸 때만 | **건너뛰기** | **건너뛰기** |
+| Apple Silicon (M1/M2/M3) | — | platform mismatch 경고 가능 (에뮬레이션으로 동작, 성능 30~50%) | — |
+
 ## 빠른 시작
 
 ### 1. 프로젝트 클론
@@ -265,6 +275,54 @@ docker compose build backend      # 하나만
 docker compose logs -f backend    # 실시간 follow
 docker compose logs --tail 30     # 마지막 30줄
 ```
+
+## 트러블슈팅
+
+### Backend 컨테이너가 `Restarting` 무한 반복
+
+**원인 1 — `backend/deepeye.db` 가 디렉토리로 만들어짐**
+
+`docker compose up` 전에 `touch backend/deepeye.db` 를 안 했으면 Docker 가 bind mount source 가 없다고 판단해서 **빈 디렉토리** 로 만들어버린다. SQLite 가 디렉토리를 DB 파일로 열 수 없어 startup 실패.
+
+확인:
+```bash
+ls -la backend/deepeye.db
+# 결과가 `d` (디렉토리) 로 시작하면 문제. `-` (파일) 이어야 정상.
+```
+
+복구:
+```bash
+docker compose down
+rm -rf backend/deepeye.db
+touch backend/deepeye.db          # 0 byte 빈 파일
+docker compose up -d
+```
+
+**원인 2 — `MEDIAMTX_API` 환경변수 누락**
+
+`backend/.env` 의 `MEDIAMTX_API` 가 비어있거나 placeholder 그대로면 backend 시작 시 `RuntimeError` 로 죽는다.
+
+확인:
+```bash
+docker compose logs --tail 30 backend
+# "환경변수 MEDIAMTX_API 가 설정되지 않았습니다" 메시지가 보이면 이 케이스
+```
+
+복구: `backend/.env` 를 다시 열어서 `MEDIAMTX_API=http://localhost:9997` 라인이 그대로 있는지 확인 후 compose 재시작.
+
+### 브라우저 콘솔에 `ERR_CONNECTION_REFUSED http://...:8000/api/health`
+
+Backend 가 안 떠있다는 뜻. 위 "Backend 컨테이너가 Restarting" 섹션 참조.
+
+### macOS / Windows 에서 `Webcam` 클릭 시 카메라 목록 빈 상태
+
+정상. v2.0 의 webcam 기능은 Linux V4L2 전용. Mac/Windows 는 `IP CAM` 탭 사용.
+
+### Apple Silicon (M1/M2/M3) 에서 `platform mismatch` 경고
+
+이미지가 amd64 기준이라 Docker Desktop 이 자동 에뮬레이션함. 동작은 OK, 성능 30~50% 정도. 무시 가능.
+
+---
 
 ## 라이선스
 
