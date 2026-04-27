@@ -37,7 +37,7 @@ git clone git@github.com:jskim1102/deepeye-lite.git
 cd deepeye-lite
 ```
 
-### 2. 환경변수 파일 생성
+### 2. 환경변수 파일 생성 + **반드시 편집**
 
 ```bash
 # 루트 (compose 가 사용 — 호스트 노출 포트)
@@ -50,7 +50,36 @@ cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 ```
 
-각 `.env` 파일 편집하여 `{...}` 플레이스홀더를 실제 값으로 채운다.
+> ⚠️ **`cp` 만 하면 끝이 아니다.** 각 파일 안의 `{...}` 플레이스홀더를 실제 값으로 직접 교체해야 한다. 안 바꾸면 compose 가 `${BACKEND_PORT}` 를 `{백엔드포트}` 로 해석해서 컨테이너가 잘못된 포트로 떠서 동작하지 않는다.
+
+#### 채워야 할 값
+
+**`./.env`** (compose 치환용 — 표준 포트 그대로 써도 됨)
+
+```bash
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
+MEDIAMTX_API_PORT=9997
+MEDIAMTX_HLS_PORT=8888
+MEDIAMTX_RTSP_PORT=8554
+# COMPOSE_FILE=docker-compose.yml:docker-compose.webcam.yml   # Linux + USB 웹캠 시에만 주석 해제
+```
+
+**`backend/.env`** (백엔드 런타임 — IP 만 환경별로 바꿈)
+
+```bash
+INTERNAL_IP=192.168.x.x       # 서버의 LAN IP (없으면 127.0.0.1)
+EXTERNAL_IP=공인IP             # 외부 접근 안 쓰면 INTERNAL_IP 와 동일하게
+# 나머지 (CORS_ORIGINS, JPEG_QUALITY 등) 는 기본값 그대로
+# MEDIAMTX_API=http://localhost:9997   ← 그대로 두면 Docker 가 알아서 mediamtx 컨테이너로 연결
+```
+
+**`frontend/.env`** (로컬 `npm run dev` 시에만 — Docker 만 쓸 거면 안 채워도 됨)
+
+```bash
+VITE_API_PORT=8000
+VITE_HLS_PORT=8888
+```
 
 ### 3. 빈 SQLite DB 파일 생성
 
