@@ -8,12 +8,14 @@
 ## 아키텍처
 
 ```
-[브라우저] ──http──► [frontend (Nginx)]    : 5173
-[브라우저] ──ws/http──► [backend (FastAPI)] : 8000  ──► /dev/video* (웹캠)
-[브라우저] ──hls──► [mediamtx]              : 8888  ◄── RTSP IP CAM
+[브라우저] ──http──► [frontend (Nginx)]    : ${FRONTEND_PORT}
+[브라우저] ──ws/http──► [backend (FastAPI)] : ${BACKEND_PORT}  ──► /dev/video* (웹캠)
+[브라우저] ──hls──► [mediamtx]              : ${MEDIAMTX_HLS_PORT}  ◄── RTSP IP CAM
                        ▲
-                       └─ [backend] ──API──► [mediamtx :9997]
+                       └─ [backend] ──API──► [mediamtx :${MEDIAMTX_API_PORT}]
 ```
+
+> 포트 번호는 모두 `./.env` 에서 관리. 실제 값은 사용자 환경에 따라 결정.
 
 | 레이어 | 스택 |
 |--------|------|
@@ -64,32 +66,15 @@ cp frontend/.env.example frontend/.env
 
 #### 채워야 할 값
 
-**`./.env`** (compose 치환용 — 표준 포트 그대로 써도 됨)
+각 `.env.example` 안의 주석에 변수 의미가 적혀있다. `{...}` 자리에 환경에 맞는 값을 넣는다.
 
-```bash
-BACKEND_PORT=8000
-FRONTEND_PORT=5173
-MEDIAMTX_API_PORT=9997
-MEDIAMTX_HLS_PORT=8888
-MEDIAMTX_RTSP_PORT=8554
-# COMPOSE_FILE=docker-compose.yml:docker-compose.webcam.yml   # Linux + USB 웹캠 시에만 주석 해제
-```
+| 파일 | 채워야 할 placeholder |
+|---|---|
+| `./.env` | 호스트 노출 포트 5개 (`BACKEND_PORT`, `FRONTEND_PORT`, `MEDIAMTX_API_PORT`, `MEDIAMTX_HLS_PORT`, `MEDIAMTX_RTSP_PORT`). Linux + USB 웹캠 사용 시 `COMPOSE_FILE` 줄 주석 해제. |
+| `backend/.env` | `INTERNAL_IP`, `EXTERNAL_IP` (서버 IP). 외부 접근 안 쓰면 `EXTERNAL_IP=INTERNAL_IP` 동일하게. 나머지(JPEG_QUALITY, MAX_WEBCAMS 등) 는 기본값 그대로. |
+| `frontend/.env` | `VITE_API_PORT`, `VITE_HLS_PORT`. **Docker 만 쓸 거면 이 파일은 미사용** — 로컬 `npm run dev` 시에만 필요. |
 
-**`backend/.env`** (백엔드 런타임 — IP 만 환경별로 바꿈)
-
-```bash
-INTERNAL_IP=192.168.x.x       # 서버의 LAN IP (없으면 127.0.0.1)
-EXTERNAL_IP=공인IP             # 외부 접근 안 쓰면 INTERNAL_IP 와 동일하게
-# 나머지 (CORS_ORIGINS, JPEG_QUALITY 등) 는 기본값 그대로
-# MEDIAMTX_API=http://localhost:9997   ← 그대로 두면 Docker 가 알아서 mediamtx 컨테이너로 연결
-```
-
-**`frontend/.env`** (로컬 `npm run dev` 시에만 — Docker 만 쓸 거면 안 채워도 됨)
-
-```bash
-VITE_API_PORT=8000
-VITE_HLS_PORT=8888
-```
+> 포트는 환경에 따라 자유롭게 정할 수 있다. 다른 서비스와 충돌 없으면 `.env.example` 의 주석에 적힌 일반적 값을 그대로 써도 무방.
 
 ### 3. 빈 SQLite DB 파일 생성
 
@@ -134,8 +119,10 @@ docker compose up -d --build
 브라우저에서:
 
 ```
-http://<서버IP>:5173
+http://<서버IP>:<FRONTEND_PORT>
 ```
+
+(`<서버IP>` 와 `<FRONTEND_PORT>` 는 본인 환경값 — 후자는 `./.env` 의 `FRONTEND_PORT` 값.)
 
 - **Webcam**: USB 웹캠을 자동 감지하여 그리드 스트리밍
 - **IP CAM**: RTSP 주소 등록 → MediaMTX 가 HLS 로 변환 → 브라우저 재생
@@ -150,36 +137,36 @@ docker compose down
 
 ### 루트 `.env` (compose 치환용 — 호스트 외부 노출 포트)
 
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `BACKEND_PORT` | 8000 | Backend API 호스트 노출 포트 |
-| `FRONTEND_PORT` | 5173 | Frontend (Nginx) 호스트 노출 포트 |
-| `MEDIAMTX_API_PORT` | 9997 | MediaMTX REST API 포트 |
-| `MEDIAMTX_HLS_PORT` | 8888 | MediaMTX HLS 재생 포트 |
-| `MEDIAMTX_RTSP_PORT` | 8554 | MediaMTX RTSP 포트 (디버깅용) |
+| 변수 | 설명 |
+|---|---|
+| `BACKEND_PORT` | Backend API 호스트 노출 포트 |
+| `FRONTEND_PORT` | Frontend (Nginx) 호스트 노출 포트 |
+| `MEDIAMTX_API_PORT` | MediaMTX REST API 포트 |
+| `MEDIAMTX_HLS_PORT` | MediaMTX HLS 재생 포트 |
+| `MEDIAMTX_RTSP_PORT` | MediaMTX RTSP 포트 (디버깅용) |
+| `COMPOSE_FILE` (선택) | Linux + USB 웹캠 사용 시 `docker-compose.yml:docker-compose.webcam.yml` 로 설정 |
 
 ### `backend/.env` (Backend 런타임)
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `INTERNAL_IP` | (설치 환경) | 서버 내부 IP |
-| `EXTERNAL_IP` | (설치 환경) | 서버 외부 IP |
+| `INTERNAL_IP` | (환경별) | 서버 내부 IP |
+| `EXTERNAL_IP` | (환경별) | 서버 외부 IP |
 | `CORS_ORIGINS` | `*` | CORS 허용 origin. 쉼표 구분. `*` 는 모두 허용. |
 | `JPEG_QUALITY` | 70 | JPEG 인코딩 품질 (1~100) |
 | `MAX_WEBCAMS` | 16 | 최대 웹캠 수 |
 | `CAPTURE_INTERVAL` | 0.03 | 캡처 스레드 sleep (초) |
 | `LOG_LEVEL` | INFO | 로그 레벨 (DEBUG/INFO/WARNING/ERROR) |
-| `MEDIAMTX_API` | `http://localhost:9997` | (로컬 실행용 기본값. Docker 기동시 compose 가 `http://mediamtx:${MEDIAMTX_API_PORT}` 로 override) |
+| `MEDIAMTX_API` | (환경별) | MediaMTX REST API URL. Docker 기동 시 compose 가 `http://mediamtx:${MEDIAMTX_API_PORT}` 로 override. |
 
 ### `frontend/.env` (로컬 dev 시에만 — Vite dev server)
 
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `VITE_API_PORT` | 8000 | Backend 호스트 노출 포트 |
-| `VITE_HLS_PORT` | 8888 | MediaMTX HLS 호스트 노출 포트 |
-| `VITE_DEV_PORT` | 5173 | Vite dev server 포트 |
+| 변수 | 설명 |
+|---|---|
+| `VITE_API_PORT` | Backend 호스트 노출 포트. 루트 `.env` 의 `BACKEND_PORT` 와 동일하게. |
+| `VITE_HLS_PORT` | MediaMTX HLS 포트. 루트 `.env` 의 `MEDIAMTX_HLS_PORT` 와 동일하게. |
 
-> Docker 빌드 시엔 루트 `.env` 의 `BACKEND_PORT`, `MEDIAMTX_HLS_PORT` 가 build args 로 자동 주입된다 (compose).
+> Docker 빌드 시엔 루트 `.env` 의 `BACKEND_PORT`, `MEDIAMTX_HLS_PORT` 가 build args 로 자동 주입된다 (compose). 즉 Docker 만 쓸 거면 `frontend/.env` 는 불필요.
 
 ## API 엔드포인트
 
@@ -308,9 +295,9 @@ docker compose logs --tail 30 backend
 # "환경변수 MEDIAMTX_API 가 설정되지 않았습니다" 메시지가 보이면 이 케이스
 ```
 
-복구: `backend/.env` 를 다시 열어서 `MEDIAMTX_API=http://localhost:9997` 라인이 그대로 있는지 확인 후 compose 재시작.
+복구: `backend/.env` 를 다시 열어서 `MEDIAMTX_API` 라인이 placeholder 가 아닌 실제 URL 로 채워져 있는지 확인 후 compose 재시작.
 
-### 브라우저 콘솔에 `ERR_CONNECTION_REFUSED http://...:8000/api/health`
+### 브라우저 콘솔에 `ERR_CONNECTION_REFUSED ...api/health`
 
 Backend 가 안 떠있다는 뜻. 위 "Backend 컨테이너가 Restarting" 섹션 참조.
 
