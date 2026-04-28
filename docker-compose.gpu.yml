@@ -1,0 +1,41 @@
+# DeepEye Lite — NVIDIA GPU 패스스루 override (v3.0~).
+#
+# 단독으로는 의미가 없고, 기본 docker-compose.yml 위에 머지되어 backend 컨테이너에
+# 호스트의 NVIDIA GPU 접근 권한을 추가한다. **Linux + NVIDIA Driver + nvidia-container-toolkit**
+# 호스트 전용. (`DEV_SPEC_v3.0.md` §3 참조.)
+#
+# 사용 방법:
+#   1) 명시적 머지
+#      docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   2) 또는 .env 의 COMPOSE_FILE 변수에 등록 후 평소대로 `docker compose up -d`:
+#      COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#      (웹캠도 쓰면)
+#      COMPOSE_FILE=docker-compose.yml:docker-compose.webcam.yml:docker-compose.gpu.yml
+#
+# Mac/Windows 또는 GPU 없는 Linux 호스트에는 적용하지 말 것 — 기동 실패하거나 그냥 CPU 폴백 동작.
+# 이 override 가 없으면 backend 는 자동으로 CPU 추론 모드 (PyTorch 가 torch.cuda.is_available()
+# 으로 GPU 부재 감지 → CPU 사용). 따라서 단순히 이 파일을 빼는 것만으로 CPU 모드가 됨.
+
+services:
+  backend:
+    # NVIDIA GPU 접근 권한 — Compose v2 표준 문법
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all          # 모든 GPU 노출. 특정 GPU 만 쓰려면 device_ids 사용.
+              capabilities: [gpu]
+    environment:
+      # backend/.env 의 YOLO_DEVICE 가 빈 문자열이면 워커가 자동 감지 → cuda:0.
+      # 명시적으로 cuda:0 을 강제하여 의도 표현. CPU 폴백을 막고 싶을 때 유용.
+      YOLO_DEVICE: cuda:0
+    volumes:
+      # YOLO 가중치 캐시 — 컨테이너 재시작 시 매번 재다운로드 방지.
+      # ultralytics 의 기본 캐시 경로는 컨테이너 안의 ~/.cache/ultralytics (= /root/.cache/ultralytics).
+      - yolo_weights:/root/.cache/ultralytics
+
+volumes:
+  # named volume — 호스트 어딘가의 docker-managed 디렉토리에 저장됨.
+  # 위치 확인: docker volume inspect deepeye_lite_yolo_weights
+  yolo_weights:

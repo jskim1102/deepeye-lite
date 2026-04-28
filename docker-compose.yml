@@ -32,6 +32,8 @@ services:
       # 호스트에 파일이 반드시 존재해야 한다. 없으면 Docker 가 디렉토리로 생성해버림.
       # 최초 생성 방법: `touch backend/deepeye.db` 또는 backend 를 한 번 비컨테이너로 실행.
       - ./backend/deepeye.db:/app/deepeye.db
+      # Custom .pt 모델 업로드 영속화 (v3.0). 호스트에 디렉토리 미리 없어도 자동 생성.
+      - ./backend/models:/app/models
     depends_on:
       - mediamtx
     restart: unless-stopped
