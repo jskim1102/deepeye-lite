@@ -1,9 +1,13 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import HlsPlayer from "../components/HlsPlayer";
+import SegmentedToggle from "../components/SegmentedToggle";
+import ModelManagerModal from "../components/ModelManagerModal";
+import ModelConfModal from "../components/ModelConfModal";
 
 const API_PORT = import.meta.env.VITE_API_PORT;
 const API_BASE = `http://${window.location.hostname}:${API_PORT}`;
+const WS_BASE = `ws://${window.location.hostname}:${API_PORT}`;
+const RECONNECT_DELAY = 2000;
 
 interface IpCam {
   id: number;
@@ -21,9 +25,103 @@ function getGridColumns(count: number): number {
   return 4;
 }
 
+/**
+ * v3.0 — IP CAM 도 WebSocket(JPEG) 으로 받는다 (DEV_SPEC §2.7 옵션 A).
+ * backend 가 RTSP 직접 캡처 + YOLO 추론 + bbox 합성 + JPEG 송출.
+ * v2.x 의 HlsPlayer (MediaMTX HLS) 는 더 이상 사용하지 않음.
+ */
+function IpcamFrame({ streamKey, name }: { streamKey: string; name: string }) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const blobUrlRef = useRef<string>("");
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    let unmounted = false;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      if (unmounted) return;
+      const ws = new WebSocket(`${WS_BASE}/api/ipcams/${streamKey}/ws`);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!unmounted) setConnected(true);
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        if (unmounted || !imgRef.current) return;
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+        const blob = new Blob([event.data], { type: "image/jpeg" });
+        blobUrlRef.current = URL.createObjectURL(blob);
+        imgRef.current.src = blobUrlRef.current;
+      };
+
+      ws.onclose = () => {
+        if (unmounted) return;
+        setConnected(false);
+        reconnectTimer = window.setTimeout(connect, RECONNECT_DELAY);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsRef.current) wsRef.current.close();
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
+  }, [streamKey]);
+
+  return (
+    <div style={styles.streamCard}>
+      <p style={styles.camLabel}>
+        {name}
+        <span
+          style={{
+            marginLeft: "0.5rem",
+            fontSize: "0.7rem",
+            color: connected ? "#4ade80" : "#f87171",
+          }}
+        >
+          {connected ? "● 연결됨" : "● 연결 끊김"}
+        </span>
+      </p>
+      <img ref={imgRef} alt={name} style={styles.streamImg} />
+    </div>
+  );
+}
+
+interface CamStats {
+  active: boolean;
+  source_fps: number;
+  inference_fps: number;
+}
+
+const DEFAULT_CONF = 0.5;
+
 function IpcamPage() {
   const navigate = useNavigate();
   const [cams, setCams] = useState<IpCam[]>([]);
+  const [stats, setStats] = useState<Record<string, CamStats>>({});
+  const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+  const [confs, setConfs] = useState<Record<string, number>>({});
+  // 카메라별 선택된 모델 목록.
+  //   undefined / null  : 미설정 (global 따름)
+  //   []                : 추론 안 함
+  //   [m1, m2]          : 그 모델들 활성
+  const [modelsByCam, setModelsByCam] = useState<Record<string, string[] | null>>({});
+  const [modalCamKey, setModalCamKey] = useState<string | null>(null);
+  // 카메라별 — 모델별 conf 오버라이드. {camKey: {modelName: 0~1}}.
+  // Phase 1 에선 frontend in-memory state. Phase 2 에서 backend persist + 실제 추론에 적용 예정.
+  const [modelConfsByCam, setModelConfsByCam] = useState<Record<string, Record<string, number>>>({});
+  const [confModalCamKey, setConfModalCamKey] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [rtspUrl, setRtspUrl] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -44,6 +142,89 @@ function IpcamPage() {
   useEffect(() => {
     fetchCams();
   }, [fetchCams]);
+
+  // FPS 통계 — 1초 주기 polling. 활성 캡처만 의미 있는 값.
+  useEffect(() => {
+    if (cams.length === 0) return;
+    const fetchAll = async () => {
+      const entries = await Promise.all(
+        cams.map(async (cam) => {
+          try {
+            const r = await fetch(`${API_BASE}/api/ipcams/${cam.stream_key}/stats`);
+            const data: CamStats = await r.json();
+            return [cam.stream_key, data] as const;
+          } catch {
+            return [cam.stream_key, { active: false, source_fps: 0, inference_fps: 0 }] as const;
+          }
+        })
+      );
+      setStats(Object.fromEntries(entries));
+    };
+    fetchAll();
+    const id = window.setInterval(fetchAll, 1000);
+    return () => window.clearInterval(id);
+  }, [cams]);
+
+  // 카메라별 추론 (enabled + conf + models) 상태 초기 fetch
+  useEffect(() => {
+    if (cams.length === 0) return;
+    const fetchAll = async () => {
+      const results = await Promise.all(
+        cams.map(async (cam) => {
+          try {
+            const r = await fetch(`${API_BASE}/api/ipcams/${cam.stream_key}/inference`);
+            const data = await r.json();
+            return [cam.stream_key, data] as const;
+          } catch {
+            return [
+              cam.stream_key,
+              { enabled: true, conf_threshold: null, models: null },
+            ] as const;
+          }
+        })
+      );
+      setEnabled(Object.fromEntries(results.map(([k, v]) => [k, !!v.enabled])));
+      setConfs(
+        Object.fromEntries(
+          results.map(([k, v]) => [k, v.conf_threshold ?? DEFAULT_CONF])
+        )
+      );
+      setModelsByCam(
+        Object.fromEntries(
+          results.map(([k, v]) => [k, (v.models ?? null) as string[] | null])
+        )
+      );
+    };
+    fetchAll();
+  }, [cams]);
+
+  const toggleInference = async (streamKey: string, on: boolean) => {
+    setEnabled((prev) => ({ ...prev, [streamKey]: on })); // 낙관적 업데이트
+    try {
+      const r = await fetch(`${API_BASE}/api/ipcams/${streamKey}/inference`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: on }),
+      });
+      const data = await r.json();
+      setEnabled((prev) => ({ ...prev, [streamKey]: !!data.enabled }));
+    } catch {
+      setEnabled((prev) => ({ ...prev, [streamKey]: !on }));
+    }
+  };
+
+  const handleModelsChange = async (streamKey: string, list: string[]) => {
+    setModelsByCam((prev) => ({ ...prev, [streamKey]: list })); // 낙관적
+    try {
+      await fetch(`${API_BASE}/api/ipcams/${streamKey}/inference`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: list }),
+      });
+    } catch {
+      /* ignore */
+    }
+  };
 
   const handleAdd = async () => {
     if (!rtspUrl.trim()) return;
@@ -145,26 +326,112 @@ function IpcamPage() {
               </tr>
             </thead>
             <tbody>
-              {cams.map((cam) => (
-                <tr key={cam.id} style={styles.tr}>
-                  <td style={styles.td}>{cam.name}</td>
-                  <td style={{ ...styles.td, fontSize: "0.85rem", color: "#93c5fd" }}>
-                    {cam.rtsp_url}
-                  </td>
-                  <td style={styles.td}>
-                    <button style={styles.editButton} onClick={() => startEdit(cam)}>
-                      수정
-                    </button>
-                    <button style={styles.deleteButton} onClick={() => handleDelete(cam.id)}>
-                      삭제
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {cams.map((cam) => {
+                const s = stats[cam.stream_key];
+                const camEnabled = enabled[cam.stream_key] ?? true;
+                return (
+                  <tr key={cam.id} style={styles.tr}>
+                    <td style={styles.td}>{cam.name}</td>
+                    <td style={{ ...styles.td, fontSize: "0.85rem", color: "#93c5fd" }}>
+                      {/* RTSP URL + FPS 배지 */}
+                      <div>
+                        {cam.rtsp_url}
+                        {s && s.active && (
+                          <span
+                            style={styles.fpsBadge}
+                            title="카메라 원본 fps / YOLO 추론 fps"
+                          >
+                            카메라 {s.source_fps.toFixed(1)} / 추론 {s.inference_fps.toFixed(1)} fps
+                          </span>
+                        )}
+                        {s && !s.active && (
+                          <span style={{ ...styles.fpsBadge, color: "#888" }}>
+                            (캡처 미동작)
+                          </span>
+                        )}
+                      </div>
+                      {/* RTSP 주소 바로 밑 — 카메라별 추론 컨트롤 (모델 → 추론 → 신뢰도 순) */}
+                      <div style={styles.toggleRow}>
+                        {/* 모델 — 클릭 시 모달. 선택 0개면 박스/배지 모두 숨김 */}
+                        {(() => {
+                          const m = modelsByCam[cam.stream_key];
+                          if (m === null || m === undefined || m.length === 0) return null;
+                          const count = m.length;
+                          const showBadge = count >= 2;
+                          const text = count === 1 ? m[0] : `${m[0]} +${count - 1}`;
+                          return (
+                            <>
+                              {showBadge && <span style={styles.modelBadge}>{count}</span>}
+                              <span style={styles.modelCount}>{text}</span>
+                            </>
+                          );
+                        })()}
+                        <button
+                          onClick={() => setModalCamKey(cam.stream_key)}
+                          style={camEnabled ? styles.manageBtn : styles.manageBtnDisabled}
+                          disabled={!camEnabled}
+                        >
+                          모델
+                        </button>
+                        <button
+                          onClick={() => setConfModalCamKey(cam.stream_key)}
+                          style={camEnabled ? styles.manageBtn : styles.manageBtnDisabled}
+                          disabled={!camEnabled}
+                        >
+                          설정
+                        </button>
+
+                        {/* 추론 ON/OFF */}
+                        <span style={{ ...styles.toggleLabel, marginLeft: "0.8rem", fontSize: "0.85rem" }}>
+                          추론
+                        </span>
+                        <SegmentedToggle
+                          enabled={camEnabled}
+                          onChange={(on) => toggleInference(cam.stream_key, on)}
+                        />
+                      </div>
+                    </td>
+                    <td style={styles.td}>
+                      <button style={styles.editButton} onClick={() => startEdit(cam)}>
+                        수정
+                      </button>
+                      <button style={styles.deleteButton} onClick={() => handleDelete(cam.id)}>
+                        삭제
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
 
-          {/* 스트리밍 그리드 */}
+          {/* 모달 — 카메라별 모델 관리 */}
+          {modalCamKey !== null && (
+            <ModelManagerModal
+              open={modalCamKey !== null}
+              onClose={() => setModalCamKey(null)}
+              cameraName={cams.find((c) => c.stream_key === modalCamKey)?.name ?? "카메라"}
+              selected={modelsByCam[modalCamKey] ?? []}
+              onSelectedChange={(list) => handleModelsChange(modalCamKey, list)}
+            />
+          )}
+
+          {/* 모달 — 카메라별 모델별 신뢰도 설정 */}
+          {confModalCamKey !== null && (
+            <ModelConfModal
+              open={confModalCamKey !== null}
+              onClose={() => setConfModalCamKey(null)}
+              cameraName={cams.find((c) => c.stream_key === confModalCamKey)?.name ?? "카메라"}
+              fallbackConf={confs[confModalCamKey] ?? DEFAULT_CONF}
+              selectedModels={modelsByCam[confModalCamKey] ?? []}
+              modelConfs={modelConfsByCam[confModalCamKey] ?? {}}
+              onModelConfsChange={(next) =>
+                setModelConfsByCam((prev) => ({ ...prev, [confModalCamKey]: next }))
+              }
+            />
+          )}
+
+          {/* 스트리밍 그리드 — v3.0: WebSocket(JPEG) 기반, bbox 포함 */}
           <div
             style={{
               ...styles.grid,
@@ -172,7 +439,7 @@ function IpcamPage() {
             }}
           >
             {cams.map((cam) => (
-              <HlsPlayer key={cam.id} streamKey={cam.stream_key} name={cam.name} />
+              <IpcamFrame key={cam.id} streamKey={cam.stream_key} name={cam.name} />
             ))}
           </div>
         </>
@@ -312,6 +579,93 @@ const styles: Record<string, React.CSSProperties> = {
   grid: {
     display: "grid",
     gap: "0.5rem",
+  },
+  streamCard: {
+    backgroundColor: "#16213e",
+    borderRadius: "8px",
+    padding: "0.5rem",
+    overflow: "hidden",
+  },
+  camLabel: {
+    margin: 0,
+    marginBottom: "0.3rem",
+    fontSize: "0.85rem",
+    color: "#aaaaaa",
+    display: "flex",
+    alignItems: "center",
+  },
+  streamImg: {
+    width: "100%",
+    height: "auto",
+    display: "block",
+    borderRadius: "4px",
+    backgroundColor: "#000",
+  },
+  fpsBadge: {
+    display: "inline-block",
+    marginLeft: "0.6rem",
+    padding: "0.1rem 0.4rem",
+    backgroundColor: "#0f3460",
+    color: "#4ade80",
+    fontSize: "0.7rem",
+    fontFamily: "monospace",
+    borderRadius: "3px",
+    verticalAlign: "middle",
+  },
+  toggleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    marginTop: "0.4rem",
+    flexWrap: "wrap",
+  },
+  toggleLabel: {
+    fontSize: "0.75rem",
+    color: "#aaaaaa",
+  },
+  modelBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "22px",
+    height: "22px",
+    borderRadius: "50%",
+    backgroundColor: "#4caf50",
+    color: "#ffffff",
+    fontSize: "0.78rem",
+    fontWeight: 700,
+    lineHeight: 1,
+  },
+  modelCount: {
+    fontSize: "0.85rem",
+    color: "#ffffff",
+    padding: "0.4rem 0.9rem",
+    backgroundColor: "#16213e",
+    border: "1px solid #2a2a3e",
+    borderRadius: "6px",
+    minWidth: "150px",
+    textAlign: "center",
+    display: "inline-block",
+  },
+  manageBtn: {
+    padding: "0.4rem 0.9rem",
+    borderRadius: "6px",
+    border: "1px solid #4caf50",
+    backgroundColor: "transparent",
+    color: "#4ade80",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  manageBtnDisabled: {
+    padding: "0.4rem 0.9rem",
+    borderRadius: "6px",
+    border: "1px solid #444",
+    backgroundColor: "transparent",
+    color: "#666",
+    fontSize: "0.8rem",
+    cursor: "not-allowed",
+    fontWeight: 600,
   },
 };
 
