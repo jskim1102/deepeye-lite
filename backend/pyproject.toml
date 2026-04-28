@@ -16,7 +16,9 @@ dependencies = [
     "sqlalchemy (>=2.0.48,<3.0.0)",
     "python-dotenv (>=1.2.2,<2.0.0)",
     "websockets (>=16.0,<17.0)",
-    "httpx (>=0.28.1,<0.29.0)"
+    "httpx (>=0.28.1,<0.29.0)",
+    "ultralytics (>=8.4.41,<9.0.0)",
+    "python-multipart (>=0.0.27,<0.0.28)"
 ]
 
 
