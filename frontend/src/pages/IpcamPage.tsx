@@ -231,8 +231,23 @@ function IpcamPage() {
       );
       setModelsByCam(
         Object.fromEntries(
-          results.map(([k, v]) => [k, (v.models ?? null) as string[] | null])
+          results.map(([k, v]) => [k, (v.models ?? []) as string[]])
         )
+      );
+
+      // models 가 backend 에서 null 로 온 카메라는 즉시 [] 로 명시 PUT —
+      // "선택 없음 = 추론 안 함" 의도가 backend 까지 일관되게 반영되도록.
+      // (없으면 worker 가 전역 기본 모델로 폴백 → UI 엔 모델 없는데 bbox 가 나옴)
+      await Promise.all(
+        results
+          .filter(([, v]) => v.models === null || v.models === undefined)
+          .map(([k]) =>
+            fetch(`${API_BASE}/api/ipcams/${k}/inference`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ models: [] }),
+            }).catch(() => {})
+          )
       );
     };
     fetchAll();
