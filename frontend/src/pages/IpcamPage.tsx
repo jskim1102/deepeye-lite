@@ -35,10 +35,12 @@ function getGridColumns(count: number): number {
 function IpcamFrame({
   streamKey,
   name,
+  enabled,
   settings,
 }: {
   streamKey: string;
   name: string;
+  enabled: boolean;
   settings?: Record<string, ModelSettings>;
 }) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -46,6 +48,11 @@ function IpcamFrame({
   const [imgSrc, setImgSrc] = useState("");
   const [detections, setDetections] = useState<Detection[]>([]);
   const [connected, setConnected] = useState(false);
+
+  // 추론 OFF 시 마지막 detections 잔존 방지 — 즉시 비움
+  useEffect(() => {
+    if (!enabled) setDetections([]);
+  }, [enabled]);
 
   useEffect(() => {
     let unmounted = false;
@@ -476,6 +483,7 @@ function IpcamPage() {
                 key={cam.id}
                 streamKey={cam.stream_key}
                 name={cam.name}
+                enabled={enabled[cam.stream_key] ?? true}
                 settings={modelSettingsByCam[cam.stream_key]}
               />
             ))}
