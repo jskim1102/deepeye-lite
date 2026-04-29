@@ -2,8 +2,15 @@
 
 경량 단독 설치형 CCTV AI 분석 플랫폼. **웹캠** 또는 **IP CAM (RTSP)** 을 입력으로 받아 웹 브라우저에서 실시간으로 모니터링한다.
 
-> **v2.0** — Docker 단일 배포 (스트리밍 전용)
-> v3.0 (예정) — YOLO 객체탐지 통합
+## 버전 히스토리
+
+| 태그 | 한줄 요약 |
+|---|---|
+| `v2.0.0` | Linux 전용 + Docker Compose 단일 배포로 전환 (스트리밍만, YOLO 미포함) |
+| `v2.1.0` | IP CAM 크로스플랫폼 지원 — 웹캠 device 마운트를 override 파일로 분리 (Mac/Windows 도 IP CAM 가능) |
+| `v3.0.0` | YOLO 추론 통합 + 카메라별 다중 모델 UI (Phase 1 — UI 만, 첫 모델만 추론) |
+| `v3.1.0` | Phase 2 다중 모델 실제 추론 + frontend canvas overlay 전환 + 모델별 클래스 필터/색상 |
+| `v3.1.1` | 추론 OFF 토글 시 마지막 bbox 가 canvas 에 잔존하던 버그 수정 |
 
 ## 아키텍처
 
