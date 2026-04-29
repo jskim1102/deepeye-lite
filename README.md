@@ -11,6 +11,7 @@
 | `v3.0.0` | YOLO 추론 통합 + 카메라별 다중 모델 UI (Phase 1 — UI 만, 첫 모델만 추론) |
 | `v3.1.0` | Phase 2 다중 모델 실제 추론 + frontend canvas overlay 전환 + 모델별 클래스 필터/색상 |
 | `v3.1.1` | 추론 OFF 토글 시 마지막 bbox 가 canvas 에 잔존하던 버그 수정 |
+| `v3.1.2` | 모델 미선택 IP CAM 의 자동 추론 비활성화 + README 버전 히스토리 표 |
 
 ## 아키텍처
 
