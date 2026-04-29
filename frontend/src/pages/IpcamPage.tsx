@@ -2,7 +2,10 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import SegmentedToggle from "../components/SegmentedToggle";
 import ModelManagerModal from "../components/ModelManagerModal";
-import ModelConfModal from "../components/ModelConfModal";
+import ModelSettingsModal, {
+  type ModelSettings,
+} from "../components/ModelSettingsModal";
+import BboxOverlay, { type Detection } from "../components/BboxOverlay";
 
 const API_PORT = import.meta.env.VITE_API_PORT;
 const API_BASE = `http://${window.location.hostname}:${API_PORT}`;
@@ -26,14 +29,22 @@ function getGridColumns(count: number): number {
 }
 
 /**
- * v3.0 — IP CAM 도 WebSocket(JPEG) 으로 받는다 (DEV_SPEC §2.7 옵션 A).
- * backend 가 RTSP 직접 캡처 + YOLO 추론 + bbox 합성 + JPEG 송출.
- * v2.x 의 HlsPlayer (MediaMTX HLS) 는 더 이상 사용하지 않음.
+ * v3.0 — IP CAM 은 WebSocket 으로 raw JPEG (binary) + detections JSON (text) 를 받는다.
+ * §4.19 옵션 2: backend 는 raw 영상만, frontend canvas 가 bbox 오버레이.
  */
-function IpcamFrame({ streamKey, name }: { streamKey: string; name: string }) {
-  const imgRef = useRef<HTMLImageElement>(null);
+function IpcamFrame({
+  streamKey,
+  name,
+  settings,
+}: {
+  streamKey: string;
+  name: string;
+  settings?: Record<string, ModelSettings>;
+}) {
   const wsRef = useRef<WebSocket | null>(null);
   const blobUrlRef = useRef<string>("");
+  const [imgSrc, setImgSrc] = useState("");
+  const [detections, setDetections] = useState<Detection[]>([]);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -51,11 +62,24 @@ function IpcamFrame({ streamKey, name }: { streamKey: string; name: string }) {
       };
 
       ws.onmessage = (event: MessageEvent) => {
-        if (unmounted || !imgRef.current) return;
-        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-        const blob = new Blob([event.data], { type: "image/jpeg" });
-        blobUrlRef.current = URL.createObjectURL(blob);
-        imgRef.current.src = blobUrlRef.current;
+        if (unmounted) return;
+        if (typeof event.data === "string") {
+          // detections JSON
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "detections") {
+              setDetections(msg.items as Detection[]);
+            }
+          } catch {
+            /* malformed — 무시 */
+          }
+        } else {
+          // binary JPEG
+          if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+          const blob = new Blob([event.data], { type: "image/jpeg" });
+          blobUrlRef.current = URL.createObjectURL(blob);
+          setImgSrc(blobUrlRef.current);
+        }
       };
 
       ws.onclose = () => {
@@ -93,7 +117,15 @@ function IpcamFrame({ streamKey, name }: { streamKey: string; name: string }) {
           {connected ? "● 연결됨" : "● 연결 끊김"}
         </span>
       </p>
-      <img ref={imgRef} alt={name} style={styles.streamImg} />
+      {imgSrc && (
+        <BboxOverlay
+          imgSrc={imgSrc}
+          alt={name}
+          detections={detections}
+          settings={settings}
+          imgStyle={styles.streamImg}
+        />
+      )}
     </div>
   );
 }
@@ -118,9 +150,10 @@ function IpcamPage() {
   //   [m1, m2]          : 그 모델들 활성
   const [modelsByCam, setModelsByCam] = useState<Record<string, string[] | null>>({});
   const [modalCamKey, setModalCamKey] = useState<string | null>(null);
-  // 카메라별 — 모델별 conf 오버라이드. {camKey: {modelName: 0~1}}.
-  // Phase 1 에선 frontend in-memory state. Phase 2 에서 backend persist + 실제 추론에 적용 예정.
-  const [modelConfsByCam, setModelConfsByCam] = useState<Record<string, Record<string, number>>>({});
+  // 카메라별 — 모델별 통합 설정 (conf override + classes filter + class colors). frontend 적용 (§4.20).
+  const [modelSettingsByCam, setModelSettingsByCam] = useState<
+    Record<string, Record<string, ModelSettings>>
+  >({});
   const [confModalCamKey, setConfModalCamKey] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [rtspUrl, setRtspUrl] = useState("");
@@ -416,17 +449,17 @@ function IpcamPage() {
             />
           )}
 
-          {/* 모달 — 카메라별 모델별 신뢰도 설정 */}
+          {/* 모달 — 카메라별 모델 설정 (conf + classes + colors) */}
           {confModalCamKey !== null && (
-            <ModelConfModal
+            <ModelSettingsModal
               open={confModalCamKey !== null}
               onClose={() => setConfModalCamKey(null)}
               cameraName={cams.find((c) => c.stream_key === confModalCamKey)?.name ?? "카메라"}
               fallbackConf={confs[confModalCamKey] ?? DEFAULT_CONF}
               selectedModels={modelsByCam[confModalCamKey] ?? []}
-              modelConfs={modelConfsByCam[confModalCamKey] ?? {}}
-              onModelConfsChange={(next) =>
-                setModelConfsByCam((prev) => ({ ...prev, [confModalCamKey]: next }))
+              settings={modelSettingsByCam[confModalCamKey] ?? {}}
+              onSettingsChange={(next) =>
+                setModelSettingsByCam((prev) => ({ ...prev, [confModalCamKey]: next }))
               }
             />
           )}
@@ -439,7 +472,12 @@ function IpcamPage() {
             }}
           >
             {cams.map((cam) => (
-              <IpcamFrame key={cam.id} streamKey={cam.stream_key} name={cam.name} />
+              <IpcamFrame
+                key={cam.id}
+                streamKey={cam.stream_key}
+                name={cam.name}
+                settings={modelSettingsByCam[cam.stream_key]}
+              />
             ))}
           </div>
         </>

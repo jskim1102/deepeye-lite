@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import BboxOverlay, { type Detection } from "../components/BboxOverlay";
 
 interface WebcamInfo {
   index: number;
@@ -21,11 +22,12 @@ function getGridColumns(count: number): number {
 
 const RECONNECT_DELAY = 2000;
 
-/** WebSocket으로 프레임을 수신하는 웹캠 컴포넌트 */
+/** WebSocket 으로 raw JPEG (binary) + detections JSON (text) 을 받는다 (§4.19 옵션 2) */
 function WebcamFrame({ index, name }: { index: number; name: string }) {
-  const imgRef = useRef<HTMLImageElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const blobUrlRef = useRef<string>("");
+  const [imgSrc, setImgSrc] = useState("");
+  const [detections, setDetections] = useState<Detection[]>([]);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -44,18 +46,25 @@ function WebcamFrame({ index, name }: { index: number; name: string }) {
       };
 
       ws.onmessage = (event: MessageEvent) => {
-        if (unmounted || !imgRef.current) return;
-        // 이전 blob URL 해제
-        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-        const blob = new Blob([event.data], { type: "image/jpeg" });
-        blobUrlRef.current = URL.createObjectURL(blob);
-        imgRef.current.src = blobUrlRef.current;
+        if (unmounted) return;
+        if (typeof event.data === "string") {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "detections") setDetections(msg.items as Detection[]);
+          } catch {
+            /* malformed — 무시 */
+          }
+        } else {
+          if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+          const blob = new Blob([event.data], { type: "image/jpeg" });
+          blobUrlRef.current = URL.createObjectURL(blob);
+          setImgSrc(blobUrlRef.current);
+        }
       };
 
       ws.onclose = () => {
         if (unmounted) return;
         setConnected(false);
-        // 자동 재연결
         reconnectTimer = window.setTimeout(connect, RECONNECT_DELAY);
       };
 
@@ -82,11 +91,14 @@ function WebcamFrame({ index, name }: { index: number; name: string }) {
           {connected ? "● 연결됨" : "● 연결 끊김"}
         </span>
       </p>
-      <img
-        ref={imgRef}
-        alt={name}
-        style={styles.streamImg}
-      />
+      {imgSrc && (
+        <BboxOverlay
+          imgSrc={imgSrc}
+          alt={name}
+          detections={detections}
+          imgStyle={styles.streamImg}
+        />
+      )}
     </div>
   );
 }
