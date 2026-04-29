@@ -15,15 +15,11 @@ from typing import Callable, Optional, Union
 import cv2
 import numpy as np
 
-from app.inference import draw_bboxes
-from app.inference.worker import InferenceResult
-
 logger = logging.getLogger("deepeye.streaming.capture")
 
 # Type alias
 SourceType = Union[int, str]
 FrameCallback = Callable[[str, np.ndarray], None]
-ResultProvider = Callable[[str], Optional[InferenceResult]]
 
 
 class VideoCaptureThread:
@@ -31,15 +27,12 @@ class VideoCaptureThread:
 
     - 백그라운드 스레드에서 OpenCV `VideoCapture` 로 프레임 읽기
     - 매 프레임마다 추론 워커에 raw frame 제출 (callback)
-    - 매 프레임마다 최신 추론 결과 조회 → bbox 그림 (provider)
     - JPEG 인코딩 후 내부 버퍼에 저장 → WebSocket 핸들러가 가져감
+      (bbox 는 frontend canvas 오버레이가 그림 — §4.19)
     - ref_count 기반 lifecycle (여러 클라이언트 동시 시청 가능)
 
     `source` 가 `int` (예: 0) 면 V4L2 웹캠, `str` (예: "rtsp://...") 면 IP CAM.
     """
-
-    # 추론 결과가 너무 오래된 (예: 5초 이상) 경우 사용 안 함
-    _STALE_RESULT_SEC = 5.0
 
     # FPS 측정 슬라이딩 윈도우 — 최근 5초 동안의 frame 수를 5로 나눠서 fps
     _STATS_WINDOW_SEC = 5.0
@@ -52,14 +45,12 @@ class VideoCaptureThread:
         source: SourceType,
         *,
         frame_callback: Optional[FrameCallback] = None,
-        result_provider: Optional[ResultProvider] = None,
         jpeg_quality: int = 70,
         inference_interval: float = 0.0,
     ) -> None:
         self.source_id = source_id
         self.source = source
         self._frame_cb = frame_callback
-        self._result_provider = result_provider
         self._jpeg_quality = jpeg_quality
         # 추론 워커에 매 프레임마다 보내면 GPU 과부하 — drift-free 쓰로틀링.
         # `_next_submit_ts` 는 "이상적 다음 제출 시각" — 한 프레임 늦어져도 다음에 보충되어
@@ -190,24 +181,9 @@ class VideoCaptureThread:
                     except Exception:
                         logger.exception("Capture %s — frame_cb 예외", self.source_id)
 
-                # 2) 최신 추론 결과로 bbox 그리기
-                display = frame
-                if self._result_provider:
-                    try:
-                        result = self._result_provider(self.source_id)
-                        if (
-                            result
-                            and result.detections
-                            and (now - result.timestamp) <= self._STALE_RESULT_SEC
-                        ):
-                            display = frame.copy()
-                            draw_bboxes(display, result.detections)
-                    except Exception:
-                        logger.exception("Capture %s — bbox draw 예외", self.source_id)
-
-                # 3) JPEG 인코딩 후 버퍼 저장
+                # 2) raw JPEG 만 인코딩 — bbox 는 프론트엔드 canvas 오버레이가 그림 (§4.19 옵션2)
                 ok, buf = cv2.imencode(
-                    ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
                 )
                 if ok:
                     with self._lock:

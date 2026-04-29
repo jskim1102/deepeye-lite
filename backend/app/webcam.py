@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from app.config import CAPTURE_INTERVAL, MAX_WEBCAMS
 from app.streaming import manager
+from app.streaming.manager import detections_to_json
 
 logger = logging.getLogger("deepeye.webcam")
 
@@ -148,11 +149,20 @@ async def webcam_ws(websocket: WebSocket, index: int) -> None:
             await asyncio.sleep(0.1)
 
         prev_frame: bytes = b""
+        prev_det_ts: float = 0.0
         while True:
+            # 1) raw JPEG (binary)
             frame = manager.get_frame(sid)
             if frame and frame is not prev_frame:
                 await websocket.send_bytes(frame)
                 prev_frame = frame
+
+            # 2) detections JSON (text) — timestamp 변경 시만
+            det = manager.get_source_latest_detections(sid)
+            if det and det.timestamp != prev_det_ts:
+                await websocket.send_text(detections_to_json(det))
+                prev_det_ts = det.timestamp
+
             await asyncio.sleep(CAPTURE_INTERVAL)
     except WebSocketDisconnect:
         logger.info("WebSocket 연결 해제: %s", sid)

@@ -9,7 +9,6 @@ from app.inference.worker import (
     InferenceResult,
     InferenceWorker,
 )
-from app.inference.draw import draw_bboxes
 from app.inference import models_dir
 
 __all__ = [
@@ -17,6 +16,5 @@ __all__ = [
     "FrameRequest",
     "InferenceResult",
     "InferenceWorker",
-    "draw_bboxes",
     "models_dir",
 ]

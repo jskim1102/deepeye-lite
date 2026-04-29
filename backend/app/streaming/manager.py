@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -107,7 +108,7 @@ class StreamManager:
                     source_id=source_id,
                     source=source,
                     frame_callback=self._submit_frame,
-                    result_provider=self._get_latest_result,
+                    # result_provider 는 §4.19 옵션 2 로 제거됨 (frontend overlay)
                     jpeg_quality=self._jpeg_quality,
                     inference_interval=self._inference_interval,
                 )
@@ -172,22 +173,25 @@ class StreamManager:
         if models_list is not None and len(models_list) == 0:
             return
 
-        # Phase 1: 첫 모델만 사용 (Phase 2 에서 다중 추론으로 확장 예정)
-        model_name = models_list[0] if models_list else None
+        # Phase 2: 모델 list 전체를 worker 에 전달 → 다중 모델 detection 합침
         self._worker.submit(
             FrameRequest(
                 source_id=source_id,
                 frame=frame,
                 timestamp=time.time(),
                 conf_threshold=conf,
-                model_name=model_name,
+                model_names=models_list,  # None or non-empty list
             )
         )
 
     def _get_latest_result(self, source_id: str) -> Optional[InferenceResult]:
-        """캡처 스레드가 매 프레임마다 호출 — source_id 의 최신 추론 결과."""
+        """source_id 의 최신 추론 결과 (없으면 None)."""
         with self._results_lock:
             return self._latest_results.get(source_id)
+
+    # WS 핸들러용 public alias — frontend overlay 가 detections JSON 으로 받음 (§4.19)
+    def get_source_latest_detections(self, source_id: str) -> Optional[InferenceResult]:
+        return self._get_latest_result(source_id)
 
     def _dispatch_loop(self) -> None:
         """worker.out_q → _latest_results 캐시 + 추론 fps 측정. 별도 스레드."""
@@ -268,6 +272,27 @@ class StreamManager:
         with self._per_source_lock:
             self._per_source_models[source_id] = list(models)
         logger.info("Per-source models: %s = %s", source_id, models)
+
+
+def detections_to_json(result: InferenceResult) -> str:
+    """InferenceResult → WS 로 보낼 JSON 문자열. frontend overlay 가 파싱.
+
+    좌표 xyxy 는 raw frame 픽셀 기준 (frontend 가 displayed canvas 로 스케일링).
+    """
+    return json.dumps({
+        "type": "detections",
+        "timestamp": result.timestamp,
+        "items": [
+            {
+                "class_id": d.class_id,
+                "name": d.class_name,
+                "conf": d.confidence,
+                "xyxy": list(d.xyxy),
+                "model": d.model,
+            }
+            for d in result.detections
+        ],
+    }, ensure_ascii=False)
 
 
 # 싱글톤 — main.py 에서 startup/shutdown 호출

@@ -12,6 +12,7 @@ from app.database import get_db
 from app.inference import models_dir
 from app.models import IpCam
 from app.streaming import manager as stream_manager
+from app.streaming.manager import detections_to_json
 
 logger = logging.getLogger("deepeye.ipcam")
 
@@ -250,11 +251,20 @@ async def ipcam_ws(websocket: WebSocket, stream_key: str) -> None:
             await asyncio.sleep(0.1)
 
         prev_frame: bytes = b""
+        prev_det_ts: float = 0.0
         while True:
+            # 1) raw JPEG (binary frame)
             frame = stream_manager.get_frame(sid)
             if frame and frame is not prev_frame:
                 await websocket.send_bytes(frame)
                 prev_frame = frame
+
+            # 2) 추론 결과 갱신 시만 detections JSON (text frame)
+            det = stream_manager.get_source_latest_detections(sid)
+            if det and det.timestamp != prev_det_ts:
+                await websocket.send_text(detections_to_json(det))
+                prev_det_ts = det.timestamp
+
             await asyncio.sleep(CAPTURE_INTERVAL)
     except WebSocketDisconnect:
         logger.info("WebSocket 연결 해제: %s", sid)
@@ -344,6 +354,34 @@ async def upload_model(file: UploadFile = File(...)) -> dict:
     info = models_dir.save_custom_model(name, io.BytesIO(content))
     logger.info("Custom 모델 업로드: %s (%s MB)", info["name"], info["size_mb"])
     return info
+
+
+_classes_cache: dict[str, dict[int, str]] = {}
+
+
+@inference_router.get("/models/{name}/classes")
+def get_model_classes(name: str) -> list[dict]:
+    """주어진 모델의 클래스 ID→이름 목록.
+
+    최초 호출 시 lazy load → `model.names` → 캐시.
+    카메라/모델별 클래스 필터·색상 UI 메타데이터 소스 (§4.20).
+    """
+    if not models_dir.is_safe_filename(name):
+        raise HTTPException(status_code=400, detail="올바르지 않은 파일명")
+
+    if name not in _classes_cache:
+        try:
+            from ultralytics import YOLO
+            path = models_dir.resolve_model_path(name)
+            m = YOLO(path)
+            names = dict(m.names) if getattr(m, "names", None) else {}
+            _classes_cache[name] = {int(k): str(v) for k, v in names.items()}
+        except Exception as e:
+            logger.exception("모델 클래스 조회 실패: %s", name)
+            raise HTTPException(status_code=500, detail=f"모델 로드 실패: {e}")
+
+    names = _classes_cache[name]
+    return [{"id": k, "name": v} for k, v in sorted(names.items())]
 
 
 @inference_router.delete("/models/{name}", status_code=204)

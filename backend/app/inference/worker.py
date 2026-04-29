@@ -11,7 +11,7 @@ CLAUDE.md §6: "AI 추론은 반드시 별도 프로세스" 원칙 구현.
        │                                    │
        │  ◄───── out_q ◄──── result ◄──────│
        │
-       └─ draw_bboxes(frame, detections) → JPEG → WebSocket → 브라우저
+       └─ raw JPEG → WebSocket → 브라우저 (브라우저 canvas 가 bbox 오버레이, §4.19)
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ class Detection:
     class_name: str
     confidence: float
     xyxy: tuple[int, int, int, int]  # (x1, y1, x2, y2) 픽셀 좌표
+    # 어떤 모델이 이 detection 을 만들었는지. 다중 모델 추론 시 라벨 prefix 결정에 사용.
+    model: str = ""
 
 
 @dataclass
@@ -52,9 +54,9 @@ class FrameRequest:
     timestamp: float  # time.time() 캡처 시각
     # per-source confidence threshold. None 이면 worker 의 global state 값 사용.
     conf_threshold: Optional[float] = None
-    # per-source 모델. None 이면 worker 의 global state model 사용.
-    # 동일 worker 가 여러 모델을 cache 에 동시 보유 → frame 마다 다른 모델 사용 가능.
-    model_name: Optional[str] = None
+    # per-source 모델 목록. None 이면 worker 의 global state model 1개 사용.
+    # 리스트면 그 모델들을 모두 돌려 detection 결과 합침 (다중 모델 추론).
+    model_names: Optional[list[str]] = None
 
 
 @dataclass
@@ -288,30 +290,30 @@ def _worker_main(in_q: mp.Queue, out_q: mp.Queue, state, device_override: Option
         except queue.Empty:
             continue
 
-        # 4) 이 frame 에 사용할 모델 결정 — per-source > global
-        target_name = req.model_name or global_model_name
-        model = get_or_load_model(target_name)
-        if model is None:
-            # 로드 실패 시 global 로 폴백
-            model = models_cache.get(global_model_name)
+        # 4) 이 frame 에 적용할 모델 list 결정 — per-source > global (단일 모델로 폴백)
+        target_names = req.model_names if req.model_names else [global_model_name]
+
+        # 5) 각 모델로 추론 → detections 합침 (Phase 2)
+        conf = (
+            req.conf_threshold
+            if req.conf_threshold is not None
+            else float(state.get("conf_threshold", 0.5))
+        )
+        detections: list[Detection] = []
+        for target_name in target_names:
+            model = get_or_load_model(target_name)
             if model is None:
-                worker_logger.error("No model available — skipping frame")
+                # 로드 실패한 모델은 skip — 다른 모델은 계속 처리
+                worker_logger.warning("Skipping unavailable model: %s", target_name)
+                continue
+            try:
+                results = model(req.frame, conf=conf, verbose=False)
+                detections.extend(_parse_results(results[0], model.names, target_name))
+            except Exception as e:
+                worker_logger.error("Inference error (%s): %s", target_name, e)
                 continue
 
-        # 5) 추론 — per-source conf 가 있으면 우선, 아니면 global
-        try:
-            conf = (
-                req.conf_threshold
-                if req.conf_threshold is not None
-                else float(state.get("conf_threshold", 0.5))
-            )
-            results = model(req.frame, conf=conf, verbose=False)
-            detections = _parse_results(results[0], model.names)
-        except Exception as e:
-            worker_logger.error("Inference error: %s", e)
-            continue
-
-        # 5) 결과 송출
+        # 6) 결과 송출 (detections 가 비어있어도 send — 클라이언트가 raw 표시)
         result = InferenceResult(
             source_id=req.source_id,
             timestamp=req.timestamp,
@@ -330,8 +332,11 @@ def _worker_main(in_q: mp.Queue, out_q: mp.Queue, state, device_override: Option
     worker_logger.info("Worker exiting")
 
 
-def _parse_results(result, names: dict) -> list[Detection]:
-    """ultralytics Results 객체 → Detection 리스트."""
+def _parse_results(result, names: dict, model_name: str = "") -> list[Detection]:
+    """ultralytics Results 객체 → Detection 리스트.
+
+    `model_name` 은 다중 모델 추론에서 어떤 모델이 만든 detection 인지 표시하기 위해 사용.
+    """
     detections: list[Detection] = []
     if result.boxes is None or len(result.boxes) == 0:
         return detections
@@ -348,6 +353,7 @@ def _parse_results(result, names: dict) -> list[Detection]:
                 class_name=str(names.get(cls_id, str(cls_id))),
                 confidence=float(conf_arr[i]),
                 xyxy=(x1, y1, x2, y2),
+                model=model_name,
             )
         )
     return detections
