@@ -35,24 +35,29 @@ function getGridColumns(count: number): number {
 function IpcamFrame({
   streamKey,
   name,
-  enabled,
+  inferenceActive,
   settings,
 }: {
   streamKey: string;
   name: string;
-  enabled: boolean;
+  // 카메라가 실제로 추론을 돌리는 상태인지 (추론 ON 토글 && 모델 ≥ 1).
+  // false 면 brand-new detections JSON 이 안 오므로 frontend 가 직접 비워줘야 잔존 방지.
+  inferenceActive: boolean;
   settings?: Record<string, ModelSettings>;
 }) {
   const wsRef = useRef<WebSocket | null>(null);
   const blobUrlRef = useRef<string>("");
+  const inferenceActiveRef = useRef(inferenceActive);
   const [imgSrc, setImgSrc] = useState("");
   const [detections, setDetections] = useState<Detection[]>([]);
   const [connected, setConnected] = useState(false);
 
-  // 추론 OFF 시 마지막 detections 잔존 방지 — 즉시 비움
+  // 추론 OFF 또는 모델 미선택 시 마지막 detections 잔존 방지 — 즉시 비우고
+  // ws.onmessage 가 stale 한 detection JSON 을 무시하도록 ref 도 갱신.
   useEffect(() => {
-    if (!enabled) setDetections([]);
-  }, [enabled]);
+    inferenceActiveRef.current = inferenceActive;
+    if (!inferenceActive) setDetections([]);
+  }, [inferenceActive]);
 
   useEffect(() => {
     let unmounted = false;
@@ -75,6 +80,8 @@ function IpcamFrame({
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === "detections") {
+              // 추론 비활성 상태에서 도착한 stale 메시지 무시 (PUT race window)
+              if (!inferenceActiveRef.current) return;
               setDetections(msg.items as Detection[]);
             }
           } catch {
@@ -223,31 +230,36 @@ function IpcamPage() {
           }
         })
       );
-      setEnabled(Object.fromEntries(results.map(([k, v]) => [k, !!v.enabled])));
-      setConfs(
-        Object.fromEntries(
-          results.map(([k, v]) => [k, v.conf_threshold ?? DEFAULT_CONF])
-        )
-      );
-      setModelsByCam(
-        Object.fromEntries(
-          results.map(([k, v]) => [k, (v.models ?? []) as string[]])
-        )
-      );
+      // UX 규칙: ON + 빈 모델 조합 금지.
+      //   models 가 비어있거나 null 이면 enabled 도 false 로 normalize.
+      const normalized = results.map(([k, v]) => {
+        const modelsArr = (v.models ?? []) as string[];
+        const en = !!v.enabled && modelsArr.length > 0;
+        return [k, { enabled: en, conf: v.conf_threshold ?? DEFAULT_CONF, models: modelsArr }] as const;
+      });
+      setEnabled(Object.fromEntries(normalized.map(([k, v]) => [k, v.enabled])));
+      setConfs(Object.fromEntries(normalized.map(([k, v]) => [k, v.conf])));
+      setModelsByCam(Object.fromEntries(normalized.map(([k, v]) => [k, v.models])));
 
-      // models 가 backend 에서 null 로 온 카메라는 즉시 [] 로 명시 PUT —
-      // "선택 없음 = 추론 안 함" 의도가 backend 까지 일관되게 반영되도록.
-      // (없으면 worker 가 전역 기본 모델로 폴백 → UI 엔 모델 없는데 bbox 가 나옴)
+      // backend state 와 normalize 결과가 다르면 즉시 PUT 으로 동기화.
+      //   - models null → []
+      //   - enabled=true 인데 models=[] → enabled=false
       await Promise.all(
-        results
-          .filter(([, v]) => v.models === null || v.models === undefined)
-          .map(([k]) =>
-            fetch(`${API_BASE}/api/ipcams/${k}/inference`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ models: [] }),
-            }).catch(() => {})
-          )
+        results.map(([k, v]) => {
+          const modelsArr = (v.models ?? []) as string[];
+          const desiredEn = !!v.enabled && modelsArr.length > 0;
+          const needsModelPut = v.models === null || v.models === undefined;
+          const needsEnabledPut = !!v.enabled !== desiredEn;
+          if (!needsModelPut && !needsEnabledPut) return Promise.resolve();
+          const body: Record<string, unknown> = {};
+          if (needsModelPut) body.models = [];
+          if (needsEnabledPut) body.enabled = desiredEn;
+          return fetch(`${API_BASE}/api/ipcams/${k}/inference`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }).catch(() => {});
+        })
       );
     };
     fetchAll();
@@ -270,11 +282,17 @@ function IpcamPage() {
 
   const handleModelsChange = async (streamKey: string, list: string[]) => {
     setModelsByCam((prev) => ({ ...prev, [streamKey]: list })); // 낙관적
+    // UX 규칙: 모델이 모두 해제되면 추론도 자동 OFF (ON+빈 모델 조합 방지)
+    const body: Record<string, unknown> = { models: list };
+    if (list.length === 0 && (enabled[streamKey] ?? true)) {
+      setEnabled((prev) => ({ ...prev, [streamKey]: false }));
+      body.enabled = false;
+    }
     try {
       await fetch(`${API_BASE}/api/ipcams/${streamKey}/inference`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: list }),
+        body: JSON.stringify(body),
       });
     } catch {
       /* ignore */
@@ -384,6 +402,7 @@ function IpcamPage() {
               {cams.map((cam) => {
                 const s = stats[cam.stream_key];
                 const camEnabled = enabled[cam.stream_key] ?? true;
+                const hasModels = (modelsByCam[cam.stream_key]?.length ?? 0) > 0;
                 return (
                   <tr key={cam.id} style={styles.tr}>
                     <td style={styles.td}>{cam.name}</td>
@@ -423,15 +442,14 @@ function IpcamPage() {
                         })()}
                         <button
                           onClick={() => setModalCamKey(cam.stream_key)}
-                          style={camEnabled ? styles.manageBtn : styles.manageBtnDisabled}
-                          disabled={!camEnabled}
+                          style={styles.manageBtn}
                         >
                           모델
                         </button>
                         <button
                           onClick={() => setConfModalCamKey(cam.stream_key)}
-                          style={camEnabled ? styles.manageBtn : styles.manageBtnDisabled}
-                          disabled={!camEnabled}
+                          style={hasModels ? styles.manageBtn : styles.manageBtnDisabled}
+                          disabled={!hasModels}
                         >
                           설정
                         </button>
@@ -443,6 +461,7 @@ function IpcamPage() {
                         <SegmentedToggle
                           enabled={camEnabled}
                           onChange={(on) => toggleInference(cam.stream_key, on)}
+                          disabled={!hasModels}
                         />
                       </div>
                     </td>
@@ -498,7 +517,10 @@ function IpcamPage() {
                 key={cam.id}
                 streamKey={cam.stream_key}
                 name={cam.name}
-                enabled={enabled[cam.stream_key] ?? true}
+                inferenceActive={
+                  (enabled[cam.stream_key] ?? true) &&
+                  (modelsByCam[cam.stream_key]?.length ?? 0) > 0
+                }
                 settings={modelSettingsByCam[cam.stream_key]}
               />
             ))}
