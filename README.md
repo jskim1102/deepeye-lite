@@ -12,6 +12,7 @@
 | `v3.1.0` | Phase 2 다중 모델 실제 추론 + frontend canvas overlay 전환 + 모델별 클래스 필터/색상 |
 | `v3.1.1` | 추론 OFF 토글 시 마지막 bbox 가 canvas 에 잔존하던 버그 수정 |
 | `v3.1.2` | 모델 미선택 IP CAM 의 자동 추론 비활성화 + README 버전 히스토리 표 |
+| `v3.1.3` | 추론 ON/OFF · 모델 선택 UX 정합성 강제 (deadlock · stale bbox 방지) |
 
 ## 아키텍처
 
